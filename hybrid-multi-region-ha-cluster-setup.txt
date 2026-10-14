@@ -1,62 +1,83 @@
-HA isiem cluster [isu-k8s-cp (172.18.0.101), stpi-k8s-master(172.26.0.8), gcp-k8s-master(10.10.1.26), isiem-proxy-host(10.10.1.36)]
-
-Note: As you can see All controlplane's are belong from different network (Cross-Network) and connected all via VPN.
-      public ip only associate with haproxy, gcp-k8s-master
-
-
-REF:
-
+====================================================================
+ HYBRID MULTI-REGION HA KUBERNETES CLUSTER - MANUAL SETUP GUIDE
+ Kubernetes 1.32 | Rocky Linux 9.x | Ubuntu 22.04 GPU nodes
+ Cilium | CRI-O | HAProxy x2 + Keepalived floating IP | etcd quorum
+====================================================================
+ 
+CLUSTER INVENTORY
+--------------------------------------------------------------------
+Role                 Hostname              IP address     Site        OS
+-------------------  --------------------  -------------  ----------  ---------------
+Floating IP (VIP)    stage.proxyhost.lan   10.10.1.100    Proxy net   Keepalived VIP
+HAProxy-1 (MASTER)   stage-proxy-host      10.10.1.36     Proxy net   Rocky Linux 9.x
+HAProxy-2 (BACKUP)   stage-proxy-host-2    10.10.1.37     Proxy net   Rocky Linux 9.x
+Control plane 1      isu-k8s-cp            172.18.0.101   On-prem ISU Rocky Linux 9.x
+Control plane 2      stpi-k8s-master       172.26.0.8     On-prem STPI Rocky Linux 9.x
+Control plane 3      gcp-k8s-master        10.10.1.26     Google Cloud Rocky Linux 9.x
+CPU workers          <site>-k8s-wk-<n>     <worker-ip>    Any site    Rocky Linux 9.x
+GPU workers          gpu-k8s-wk-<n>        <gpu-ip>       Any site    Ubuntu 22.04 LTS
+ 
+NOTES
+- All control planes are on DIFFERENT networks (cross-network) and
+  connected over VPN. etcd quorum runs across the VPN.
+- Public IPs are associated only with the HAProxy node(s) and the
+  GCP control plane.
+- The DNS name stage.proxyhost.lan ALWAYS points to the floating IP
+  (10.10.1.100), never to an individual HAProxy node.
+- The two HAProxy nodes must be in the SAME L2 segment so the floating
+  IP can move between them. (If the proxies run inside GCP, VRRP
+  floating IPs do not work natively; use alias IPs or a GCP internal
+  load balancer instead.)
+- Replace every IP, hostname and the interface name "eth0" with your
+  own values.
+- NEVER commit real join tokens, discovery hashes, certificate keys or
+  kubeconfig files to a repository. Use placeholders and rotate
+  anything that was exposed.
+ 
+REFERENCES
 https://www.linuxsysadmins.com/setting-up-haproxy-for-kubernetes-ha/
-https://www.linuxsysadmins.com/ha-clusters-kubeadm-rocky-linux-9-4/#google_vignette
-
-
-setup haproxy node
-
-# dnf install haproxy -y
+https://www.linuxsysadmins.com/ha-clusters-kubeadm-rocky-linux-9-4/
+ 
+ 
+====================================================================
+PHASE 1 - HAPROXY NODES (run on BOTH proxy nodes)
+====================================================================
+ 
+# dnf install haproxy keepalived -y
 # cp /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg-original
-
+ 
+Open the firewall for API traffic and VRRP between the two nodes:
+ 
+# firewall-cmd --permanent --add-port=6443/tcp
+# firewall-cmd --permanent --add-rich-rule='rule protocol value="vrrp" accept'
+# firewall-cmd --reload
+ 
+Add the local DNS entry pointing to the FLOATING IP:
+ 
+# vi /etc/hosts
+ 
+10.10.1.100 stage.proxyhost.lan
+ 
+Edit /etc/haproxy/haproxy.cfg. The file is IDENTICAL on both nodes.
+Keep the stock "global" section and replace the rest:
+ 
 #---------------------------------------------------------------------
-# Example configuration for a possible web application.  See the
-# full configuration options online.
-#
-#   https://www.haproxy.org/download/1.8/doc/configuration.txt
-#
-#---------------------------------------------------------------------
-
-#---------------------------------------------------------------------
-# Global settings
+# Global settings (stock, keep as shipped)
 #---------------------------------------------------------------------
 global
-    # to have these messages end up in /var/log/haproxy.log you will
-    # need to:
-    #
-    # 1) configure syslog to accept network log events.  This is done
-    #    by adding the '-r' option to the SYSLOGD_OPTIONS in
-    #    /etc/sysconfig/syslog
-    #
-    # 2) configure local2 events to go to the /var/log/haproxy.log
-    #   file. A line like the following can be added to
-    #   /etc/sysconfig/syslog
-    #
-    #    local2.*                       /var/log/haproxy.log
-    #
     log         127.0.0.1 local2
-
     chroot      /var/lib/haproxy
     maxconn     4000
     user        haproxy
     group       haproxy
     daemon
-
-    # turn on stats unix socket
-
+ 
     # utilize system-wide crypto-policies
     ssl-default-bind-ciphers PROFILE=SYSTEM
     ssl-default-server-ciphers PROFILE=SYSTEM
-
+ 
 #---------------------------------------------------------------------
-# common defaults that all the 'listen' and 'backend' sections will
-# use if not designated in their block
+# Defaults
 #---------------------------------------------------------------------
 defaults
     mode                    tcp
@@ -65,196 +86,232 @@ defaults
     option                  dontlognull
     retries                 3
     timeout connect         10s
-    timeout client          1m
-    timeout server          1m
+    timeout client          1h
+    timeout server          1h
     timeout check           10s
     maxconn                 3000
-
+ 
 #---------------------------------------------------------------------
-# main frontend which proxys to the backends
+# Frontend: Kubernetes API
 #---------------------------------------------------------------------
-frontend isiem-apiserver
+frontend k8s-api
     bind *:6443
-    option tcplog
     mode                tcp
-    default_backend     isiemcp_api_backend
-
+    option              tcplog
+    default_backend     k8s-control-planes
+ 
 #---------------------------------------------------------------------
-# round robin balancing between the various backends
+# Backend: round robin across the three control planes
 #---------------------------------------------------------------------
-backend         isiemcp_api_backend
+backend k8s-control-planes
     mode        tcp
     option      tcp-check
     balance     roundrobin
     default-server inter 10s downinter 5s rise 2 fall 2 slowstart 60s maxconn 250 maxqueue 256 weight 100
-    server wazcp1 172.26.0.8:6443 check
-    server wazcp2 172.18.0.101:6443 check
-    server wazcp3 10.10.1.26:6443 check
-[sandeep_dash@isiem-proxy-host ~]$ 
-
-
-add local dns pointing to haproxy internal ip inside "/etc/hosts"
-
-vi /etc/hosts
-
-10.10.1.33 isiem.proxyhost.lan
-
-
-Check for the Syntax error.
-
-# haproxy -c -V -f /etc/haproxy/haproxy.cfg
-
-Start and enable the HAProxy service
-
-# systemctl start haproxy.service
-# systemctl enable haproxy.service
-
-
-Incase, if the service failed to start check for the logs and remediate.
-
-# journalctl -xeu haproxy.service
-
-
-Creating Highly Available Clusters with kubeadm on Rocky Linux 9.7 (Blue Onyx):
-
-
-STEPS:
-
-sudo hostnamectl set-hostname <control-plane/worker-hostname-here>
-bash
-
-Note: 
-
-If you change the hostname later for any nodes, then nodes will not be join automatically if node stop/reboot or after maintainance.
-and you'll get mentioned error.
-
-[root@isiem-k8s-wk-1 ~]# sudo journalctl -u kubelet --no-pager -n 50
-Feb 05 04:39:52 isiem-k8s-wk-1 kubelet[5571]: E0205 04:39:52.404646    5571 eviction_manager.go:292] "Eviction manager: failed to get summary stats" err="failed to get node info: node \"isiem-k8s-wk-1\" not found"
-Feb 05 04:39:52 isiem-k8s-wk-1 kubelet[5571]: E0205 04:39:52.833986    5571 controller.go:145] "Failed to ensure lease exists, will retry" err="leases.coordination.k8s.io \"isiem-k8s-wk-1\" is forbidden: User \"system:node:k8s-isu-worker-6\" cannot get resource \"leases\" in API group \"coordination.k8s.io\" in the namespace \"kube-node-lease\": can only access node lease with the same name as the requesting node" interval="7s"
-Feb 05 04:39:54 isiem-k8s-wk-1 kubelet[5571]: I0205 04:39:54.545268    5571 kubelet_node_status.go:75] "Attempting to register node" node="isiem-k8s-wk-1"
-
+    server isu-k8s-cp      172.18.0.101:6443 check
+    server stpi-k8s-master 172.26.0.8:6443   check
+    server gcp-k8s-master  10.10.1.26:6443   check
  
-
-set local dns on both control-plane and worker node
-
-If its control-plane then set other 2 control-plane and proxy server address for bootstrap.
-
-
-For your reference-
-control-plane "/etc/hosts" configs:
-
-[isiem@isiem-k8s-cp-1 ~]$ cat /etc/hosts
+The 1h client/server timeouts keep long-lived kubectl sessions
+(watch, logs -f, exec) from being cut by the proxy.
+ 
+Check for syntax errors:
+ 
+# haproxy -c -V -f /etc/haproxy/haproxy.cfg
+ 
+Start and enable HAProxy:
+ 
+# systemctl enable --now haproxy.service
+ 
+If the service fails to start, check the logs and remediate:
+ 
+# journalctl -xeu haproxy.service
+ 
+ 
+====================================================================
+PHASE 2 - KEEPALIVED FLOATING IP (run on BOTH proxy nodes)
+====================================================================
+ 
+/etc/keepalived/keepalived.conf on HAProxy-1 (MASTER, stage-proxy-host):
+ 
+vrrp_script chk_haproxy {
+    script "/usr/bin/systemctl is-active --quiet haproxy"
+    interval 2
+    weight -20
+    fall 2
+    rise 2
+}
+ 
+vrrp_instance K8S_API_VIP {
+    state MASTER
+    interface eth0
+    virtual_router_id 51
+    priority 101
+    advert_int 1
+ 
+    # Unicast VRRP works where multicast is blocked
+    unicast_src_ip 10.10.1.36
+    unicast_peer {
+        10.10.1.37
+    }
+ 
+    virtual_ipaddress {
+        10.10.1.100/24
+    }
+ 
+    track_script {
+        chk_haproxy
+    }
+}
+ 
+On HAProxy-2 (BACKUP, stage-proxy-host-2) use the same file with:
+    state BACKUP
+    priority 100
+    unicast_src_ip 10.10.1.37
+    unicast_peer { 10.10.1.36 }
+ 
+# systemctl enable --now keepalived
+ 
+Verify (the VIP must appear on the MASTER only):
+ 
+# ip addr show eth0 | grep 10.10.1.100
+ 
+Test failover:
+1. Stop HAProxy on the MASTER:   systemctl stop haproxy
+2. Confirm the VIP moved to the BACKUP: ip addr show eth0 | grep 10.10.1.100
+3. Confirm the API port still answers:  nc -zv stage.proxyhost.lan 6443
+4. Start HAProxy on the MASTER again and watch the VIP fail back.
+ 
+ 
+====================================================================
+PHASE 3 - PREREQUISITES ON ALL CLUSTER NODES
+====================================================================
+ 
+Creating Highly Available Clusters with kubeadm on Rocky Linux 9.x.
+ 
+--------------------------------------------------------------------
+3.1 Hostname (set it ONCE, do not change later)
+--------------------------------------------------------------------
+ 
+# sudo hostnamectl set-hostname <control-plane/worker-hostname-here>
+# bash
+ 
+NOTE: If you change the hostname later, the node will not rejoin
+automatically after a stop/reboot or maintenance, and kubelet logs
+show errors like:
+ 
+  node "old-name" not found
+  User "system:node:old-name" cannot get resource "leases" ...
+  can only access node lease with the same name as the requesting node
+ 
+See FAILURE CASE 2 if this happens.
+ 
+--------------------------------------------------------------------
+3.2 Local DNS (/etc/hosts)
+--------------------------------------------------------------------
+ 
+On every node, add the floating IP entry. Control planes ALSO list the
+other control planes.
+ 
+Control-plane example (isu-k8s-cp):
+ 
 # Your system has configured 'manage_etc_hosts' as True.
-# As a result, if you wish for changes to this file to persist
-# then you will need to either
-# a.) make changes to the master file in /etc/cloud/templates/hosts.redhat.tmpl
-# b.) change or remove the value of 'manage_etc_hosts' in
-#     /etc/cloud/cloud.cfg or cloud-config from user-data
-#
-# The following lines are desirable for IPv4 capable hosts
-127.0.0.1 isu-k8s-cp-1 isu-k8s-cp-1
+# Make changes in /etc/cloud/templates/hosts.redhat.tmpl or change
+# 'manage_etc_hosts' in /etc/cloud/cloud.cfg for them to persist.
+127.0.0.1 isu-k8s-cp
 127.0.0.1 localhost.localdomain localhost
 127.0.0.1 localhost4.localdomain4 localhost4
-
-# The following lines are desirable for IPv6 capable hosts
-::1 isiem-k8s-cp-1 isiem-k8s-cp-1
+::1 isu-k8s-cp
 ::1 localhost.localdomain localhost
 ::1 localhost6.localdomain6 localhost6
-
-10.10.1.33 isiem.proxyhost.lan   # proxy-host dns must be recorded
-10.10.1.34 isiem-k8s-cp-3        # all control-plane's dns must be recorded
-172.26.0.101 isiem-k8s-cp-2
-[isiem@isiem-k8s-cp-1 ~]$
-
-
-For your reference-
-If its worker-node then set proxy server address for bootstrap.
-
-For worker nodes "/etc/hosts" configs:
-
-[isiem@isu-k8s-wk-2 ~]$ cat /etc/hosts
-# Your system has configured 'manage_etc_hosts' as True.
-# As a result, if you wish for changes to this file to persist
-# then you will need to either
-# a.) make changes to the master file in /etc/cloud/templates/hosts.redhat.tmpl
-# b.) change or remove the value of 'manage_etc_hosts' in
-#     /etc/cloud/cloud.cfg or cloud-config from user-data
-#
-# The following lines are desirable for IPv4 capable hosts
-127.0.0.1 isu-k8s-wk-2 isu-k8s-wk-2
+ 
+10.10.1.100  stage.proxyhost.lan     # floating IP, must be recorded
+172.26.0.8   stpi-k8s-master         # all other control planes
+10.10.1.26   gcp-k8s-master
+ 
+Worker example (isu-k8s-wk-2):
+ 
+127.0.0.1 isu-k8s-wk-2
 127.0.0.1 localhost.localdomain localhost
 127.0.0.1 localhost4.localdomain4 localhost4
-
-# The following lines are desirable for IPv6 capable hosts
-::1 isu-k8s-wk-2 isu-k8s-wk-2
+::1 isu-k8s-wk-2
 ::1 localhost.localdomain localhost
 ::1 localhost6.localdomain6 localhost6
-10.10.1.33 isiem.proxyhost.lan     # proxy-host dns must be recorded
-[isiem@isu-k8s-wk-2 ~]$
-
-
-Sysadmin tools
-Install below prerequisites across all nodes
-
+ 
+10.10.1.100 stage.proxyhost.lan      # floating IP, must be recorded
+ 
+--------------------------------------------------------------------
+3.3 Rocky Linux 9 nodes (control planes and CPU workers)
+--------------------------------------------------------------------
+ 
+Sysadmin tools (all nodes):
+ 
 # dnf install wget curl vim bash-completion nc tcpdump telnet bind-utils -y
-Disable Swap
-Disable Swap and remove the FSTAB entry
-
-$ swapoff -a
-$ free -m
-$ vim /etc/fstab
-Remove the swap entries from /etc/default/grub
-
+ 
+Disable swap and remove the fstab entry:
+ 
+# swapoff -a
+# sed -i '/ swap / s/^/#/' /etc/fstab
+# free -m
+ 
+Remove the swap entries from /etc/default/grub (rd.lvm.lv=vg01/swap,
+resume=/dev/mapper/vg01-swap), then rebuild grub:
+ 
 # vim /etc/default/grub
-
-rd.lvm.lv=vg01/swap
-resume=/dev/mapper/vg01-swap
-Save and exit, and rebuild the grub
-
 # grub2-mkconfig -o /boot/grub2/grub.cfg
-SELinux configuration
-SELinux should be in permissive mode, change the mode and make sure to set the config persistent.
-
+ 
+SELinux: set permissive now and persistently:
+ 
 # setenforce 0
-# sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
-Firewall requirements
-We need number of ports across both control plane and worker nodes, make sure to allow below ports.
-
-
-In this setup, we are opting to use CRI-O as our container runtime, although other options such as containerd, Docker, and Mirantis are also available.
-
-Forwarding IPv4 and letting iptables see bridged traffic
-
-cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+# sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+ 
+Firewall requirements (open on the matching node types):
+ 
+Control plane:
+# firewall-cmd --permanent --add-port={6443,2379-2380,10250,10257,10259}/tcp
+ 
+Workers:
+# firewall-cmd --permanent --add-port={10250,30000-32767}/tcp
+ 
+Cilium (all nodes):
+# firewall-cmd --permanent --add-port=8472/udp
+# firewall-cmd --permanent --add-port={4240,4244}/tcp
+# firewall-cmd --reload
+ 
+Restrict 6443 and 2379-2380 to the proxy and node networks, and keep
+the VPN ACLs between sites as tight as possible.
+ 
+Kernel modules and sysctl (forwarding IPv4, iptables sees bridged traffic):
+ 
+# cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
 overlay
 br_netfilter
 EOF
-Sysctl parameters required during the setup.
-
-cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-iptables = 1
+ 
+# cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
 net.bridge.bridge-nf-call-ip6tables = 1
-net.ipv4.ip_forward = 1
+net.ipv4.ip_forward                 = 1
 EOF
-Apply the parameters without rebooting the servers
-
-# sudo sysctl --system
-Enabling the modules and verify.
-
+ 
 # modprobe overlay
 # modprobe br_netfilter
+# sudo sysctl --system
+ 
+Verify (values must be 1):
+ 
 # lsmod | grep br_netfilter
 # lsmod | grep overlay
-Make sure the value is set to 1.
-
 # sysctl net.bridge.bridge-nf-call-iptables net.bridge.bridge-nf-call-ip6tables net.ipv4.ip_forward
-Set the variable for Kubernetes platform version.
-
-KUBERNETES_VERSION=v1.3.5
-PROJECT_PATH=prerelease:/main
-Create the required Kubernetes and CRI-O repositories
-
-cat <<EOF | tee /etc/yum.repos.d/kubernetes.repo
+ 
+Set the Kubernetes and CRI-O versions (same minor version):
+ 
+KUBERNETES_VERSION=v1.32
+PROJECT_PATH=stable:/v1.32
+ 
+Create the Kubernetes and CRI-O repositories:
+ 
+# cat <<EOF | tee /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
 baseurl=https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/rpm/
@@ -263,443 +320,235 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/$KUBERNETES_VERSION/rpm/repodata/repomd.xml.key
 exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF
-cat <<EOF | tee /etc/yum.repos.d/cri-o.repo
+ 
+# cat <<EOF | tee /etc/yum.repos.d/cri-o.repo
 [cri-o]
 name=CRI-O
-baseurl=https://pkgs.k8s.io/addons:/cri-o:/$PROJECT_PATH/rpm/
+baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/$PROJECT_PATH/rpm/
 enabled=1
 gpgcheck=1
-gpgkey=https://pkgs.k8s.io/addons:/cri-o:/$PROJECT_PATH/rpm/repodata/repomd.xml.key
+gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/$PROJECT_PATH/rpm/repodata/repomd.xml.key
 EOF
-
-Install, start and enable the service.
-
-# dnf install -y container-selinux
-$ dnf install -y cri-o
-$ systemctl start crio.service
-$ systemctl enable crio.service
-Installing Kubernetes packages
-
-And the final packages required to setup the kubeadm HA cluster
-
-$ dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-$ systemctl enable --now kubelet
-Initializing Cluster
-First we need to initialize on any one of the control plane
-
-# sudo kubeadm init --skip-phases=addon/kube-proxy --control-plane-endpoint "k8s.apiproxy.lan:6443" --upload-certs
-Once we run the above command, it will manage to download the required images to set up the kubernetes cluster.
-
-[root@k8smas1 ~]# crictl images
-IMAGE                                     TAG                 IMAGE ID            SIZE
-registry.k8s.io/coredns/coredns           v1.11.1             cbb01a7bd410d       61.2MB
-registry.k8s.io/etcd                      3.5.12-0            3861cfcd7c04c       151MB
-registry.k8s.io/kube-apiserver            v1.29.6             3af2ab51e1364       129MB
-registry.k8s.io/kube-controller-manager   v1.29.6             083b81fc09e85       123MB
-registry.k8s.io/kube-proxy                v1.29.6             9c49592198fa1       83.7MB
-registry.k8s.io/kube-scheduler            v1.29.6             49d9b8328a8fd       60.7MB
-registry.k8s.io/pause                     3.9                 e6f1816883972       750kB
-[root@k8smas1 ~]# 
-The long output has been truncated, copy and save the output for the future use.
-
-[addons] Applied essential addon: CoreDNS
-[addons] Applied essential addon: kube-proxy
-
-Your Kubernetes control-plane has initialized successfully!
-
-To start using your cluster, you need to run the following as a regular user:
-
-  mkdir -p $HOME/.kube
-  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-  sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-Alternatively, if you are the root user, you can run:
-
-  export KUBECONFIG=/etc/kubernetes/admin.conf
-
-You should now deploy a pod network to the cluster.
-Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
-  https://kubernetes.io/docs/concepts/cluster-administration/addons/
-
-You can now join any number of the control-plane node running the following command on each as root:
-
-  kubeadm join isiem.proxyhost.lan:6443 --token 5g52ya.fghnz6ayanqflro3 \
-	--discovery-token-ca-cert-hash sha256:469a3a655048c8d1e170c44bf2529d9628c726966bd57de8045c55e4b50a8753 \
-	--control-plane --certificate-key 800a08f0dc6ac8cdc64407318d6beef4236c72e59035c47baef10b186c435c53
-
-Please note that the certificate-key gives access to cluster sensitive data, keep it secret!
-As a safeguard, uploaded-certs will be deleted in two hours; If necessary, you can use
-"kubeadm init phase upload-certs --upload-certs" to reload certs afterward.
-
-Then you can join any number of worker nodes by running the following on each as root:
-
-kubeadm join isiem.proxyhost.lan:6443 --token 5g52ya.fghnz6ayanqflro3 \
-	--discovery-token-ca-cert-hash sha256:469a3a655048c8d1e170c44bf2529d9628c726966bd57de8045c55e4b50a8753 
-[root@k8smas1 ~]#
-
-Once we get the above output, join the other control planes by running.
-
-# kubeadm join isiem.proxyhost.lan:6443 --token 5g52ya.fghnz6ayanqflro3 \
-	--discovery-token-ca-cert-hash sha256:469a3a655048c8d1e170c44bf2529d9628c726966bd57de8045c55e4b50a8753 \
-	--control-plane --certificate-key 800a08f0dc6ac8cdc64407318d6beef4236c72e59035c47baef10b186c435c53
-Joining Worker Nodes
-Right after control plane start to join the worker nodes by running
-
-# kubeadm join isiem.proxyhost.lan:6443 --token 5g52ya.fghnz6ayanqflro3 \
-	--discovery-token-ca-cert-hash sha256:469a3a655048c8d1e170c44bf2529d9628c726966bd57de8045c55e4b50a8753 
-Prepare the normal user to reach the API.
-
- $ mkdir -p $HOME/.kube
- $ sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
- $ sudo chown $(id -u):$(id -g) $HOME/.kube/config
-
-
-
-Then join 2nd control-plane node, which is on different network.
-
-To add 3rd control-plane execute the mentioned steps.
-
-if you have a cross network control-plane connection like we have, then take a backup and execute ClusterConfiguration manifest first with 2 controlplane etcd
-
-sudo cp -r /etc/kubernetes/pki/etcd /etc/kubernetes/pki/etcd.backup.$(date +%Y%m%d)
-
-then add SAN,
-
-cat <<EOF | sudo tee /tmp/kubeadm-etcd-san.yaml
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
+ 
+(CRI-O packages are published at https://cri-o.io. If the repo URL
+above changes, take the current one from the CRI-O install page.)
+ 
+Install CRI-O (container runtime), then the Kubernetes packages:
+ 
+# dnf install -y container-selinux cri-o
+# systemctl enable --now crio.service
+# dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+# systemctl enable --now kubelet
+ 
+--------------------------------------------------------------------
+3.4 Ubuntu 22.04 LTS nodes (GPU workers)
+--------------------------------------------------------------------
+ 
+# hostnamectl set-hostname gpu-k8s-wk-<n>
+# echo "10.10.1.100 stage.proxyhost.lan" >> /etc/hosts
+ 
+# swapoff -a && sed -i '/ swap / s/^/#/' /etc/fstab
+ 
+# modprobe overlay && modprobe br_netfilter
+# cat <<EOF | tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+# cat <<EOF | tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+EOF
+# sysctl --system
+ 
+Kubernetes packages (match the cluster minor version):
+ 
+# apt-get update && apt-get install -y apt-transport-https ca-certificates curl gpg
+# mkdir -p -m 755 /etc/apt/keyrings
+# curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.32/deb/Release.key \
+    | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+# echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.32/deb/ /' \
+    | tee /etc/apt/sources.list.d/kubernetes.list
+# apt-get update && apt-get install -y kubelet kubeadm kubectl
+# apt-mark hold kubelet kubeadm kubectl
+ 
+Install CRI-O for the same minor version (see https://cri-o.io), then:
+ 
+# systemctl enable --now crio kubelet
+ 
+ 
+====================================================================
+PHASE 4 - INITIALIZE THE FIRST CONTROL PLANE (isu-k8s-cp)
+====================================================================
+ 
+The control plane endpoint is the KEEPALIVED FLOATING IP (via its DNS
+name), not an individual HAProxy node. Run on ONE control plane only:
+ 
+# sudo kubeadm init \
+    --skip-phases=addon/kube-proxy \
+    --control-plane-endpoint "stage.proxyhost.lan:6443" \
+    --apiserver-cert-extra-sans "10.10.1.100,stage.proxyhost.lan" \
+    --upload-certs
+ 
+kubeadm downloads the required images. Verify with:
+ 
+# crictl images
+ 
+Sample (versions will match your cluster):
+IMAGE                                     TAG
+registry.k8s.io/coredns/coredns           v1.11.x
+registry.k8s.io/etcd                      3.5.x-0
+registry.k8s.io/kube-apiserver            v1.32.x
+registry.k8s.io/kube-controller-manager   v1.32.x
+registry.k8s.io/kube-scheduler            v1.32.x
+registry.k8s.io/pause                     3.10
+ 
+SAVE the join output (it is shown only once). Example shape:
+ 
+  kubeadm join stage.proxyhost.lan:6443 --token <token> \
+      --discovery-token-ca-cert-hash sha256:<hash> \
+      --control-plane --certificate-key <cert-key>
+ 
+  kubeadm join stage.proxyhost.lan:6443 --token <token> \
+      --discovery-token-ca-cert-hash sha256:<hash>
+ 
+The certificate key gives access to sensitive cluster data, keep it
+secret. Uploaded certs are deleted after 2 hours. Reload them with:
+ 
+# kubeadm init phase upload-certs --upload-certs
+ 
+Join tokens expire after 24 hours. Create a new one with:
+ 
+# kubeadm token create --print-join-command
+ 
+Prepare a normal user to reach the API:
+ 
+$ mkdir -p $HOME/.kube
+$ sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+$ sudo chown $(id -u):$(id -g) $HOME/.kube/config
+ 
+Optional warnings you may see:
+- "kernel release 5.14.x is unsupported" on Rocky 9: this is a
+  SystemVerification warning and can be ignored.
+- "sandbox image pause:3.10 inconsistent with kubeadm": optionally set
+  the CRI-O pause_image to the version kubeadm recommends.
+ 
+ 
+====================================================================
+PHASE 5 - JOIN ADDITIONAL CONTROL PLANES AND WORKERS
+====================================================================
+ 
+5.1 Join the 2nd control plane (stpi-k8s-master), different network:
+ 
+# sudo kubeadm join stage.proxyhost.lan:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash> \
+    --control-plane \
+    --certificate-key <cert-key>
+ 
+5.2 Cross-network etcd SANs (do this BEFORE joining the 3rd control
+plane). Take a backup of the etcd PKI:
+ 
+# sudo cp -r /etc/kubernetes/pki/etcd /etc/kubernetes/pki/etcd.backup.$(date +%Y%m%d)
+ 
+Then add the control-plane IPs to the etcd SAN lists by editing the
+EXISTING ConfigMap in place (do not replace it with a partial file):
+ 
+# kubectl -n kube-system edit cm kubeadm-config
+ 
+Under ClusterConfiguration, set:
+ 
 etcd:
   local:
-    serverCertSANs:
-      - "localhost"
-      - "127.0.0.1"
-      - "10.10.1.26"
-      - "172.26.0.1"
-      - "172.26.0.8"
-    peerCertSANs:
-      - "localhost"
-      - "127.0.0.1"
-      - "10.10.1.26"
-      - "172.26.0.1"
-      - "172.26.0.8"
-EOF
-
-Now, you can safely go with to join 3rd controlplane on cluster.
-
-# sudo kubeadm join isiem.proxyhost.lan:6443 \
-  --token 6wrnas.dolxdiwim7zzjeck \
-  --discovery-token-ca-cert-hash sha256:67446740688bd8ba9d3b00b938d1e55f81744d91684d58d5f6b25e7a3468eb0f \
-  --control-plane \
-  --certificate-key db5b8ab390fd248d22b433ae2c8df0979215e6c675864aac69cee5d294952f6d
-
-
-FAILURE CASE 1:
-
-Note: If you still get an error as mentioned, due to earlier you have already joined 3rd control-plane but due to an server issue you want to remove the 3rd control-plane and join it to the cluster again then follow the steps.
-
-error is:
-
-[root@isu-k8s-cp-1 ~]# sudo kubeadm join isiem.proxyhost.lan:6443 \
-  --token 6wrnas.dolxdiwim7zzjeck \
-  --discovery-token-ca-cert-hash sha256:67446740688bd8ba9d3b00b938d1e55f81744d91684d58d5f6b25e7a3468eb0f \
-  --control-plane \
-  --certificate-key db5b8ab390fd248d22b433ae2c8df0979215e6c675864aac69cee5d294952f6d
-[preflight] Running pre-flight checks
-        [WARNING SystemVerification]: kernel release 5.14.0-611.16.1.el9_7.x86_64 is unsupported. Supported LTS versions from the 5.x series are 5.4, 5.10 and 5.15. Any 6.x version is also supported. For cgroups v2 support, the recommended version is 5.10 or newer
-[preflight] Reading configuration from the "kubeadm-config" ConfigMap in namespace "kube-system"...
-[preflight] Use 'kubeadm init phase upload-config kubeadm --config your-config-file' to re-upload it.
-W0204 18:28:09.125170    7249 configset.go:77] Warning: No kubeproxy.config.k8s.io/v1alpha1 config is loaded. Continuing without it: configmaps "kube-proxy" not found
-[preflight] Running pre-flight checks before initializing the new control plane instance
-[preflight] Pulling images required for setting up a Kubernetes cluster
-[preflight] This might take a minute or two, depending on the speed of your internet connection
-[preflight] You can also perform this action beforehand using 'kubeadm config images pull'
-W0204 18:28:09.524759    7249 checks.go:906] detected that the sandbox image "registry.k8s.io/pause:3.10" of the container runtime is inconsistent with that used by kubeadm. It is recommended to use "registry.k8s.io/pause:3.10.1" as the CRI sandbox image.
-[download-certs] Downloading the certificates in Secret "kubeadm-certs" in the "kube-system" Namespace
-[download-certs] Saving the certificates to the folder: "/etc/kubernetes/pki"
-[certs] Using certificateDir folder "/etc/kubernetes/pki"
-[certs] Generating "apiserver" certificate and key
-[certs] apiserver serving cert is signed for DNS names [kubernetes kubernetes.default kubernetes.default.svc kubernetes.default.svc.cluster.local isiem-k8s-cp-1 isiem.proxyhost.lan] and IPs [10.96.0.1 172.18.0.118]
-[certs] Generating "apiserver-kubelet-client" certificate and key
-[certs] Generating "front-proxy-client" certificate and key
-[certs] Generating "etcd/healthcheck-client" certificate and key
-[certs] Generating "etcd/server" certificate and key
-[certs] etcd/server serving cert is signed for DNS names [localhost isiem-k8s-cp-1] and IPs [172.18.0.118 127.0.0.1 ::1]
-[certs] Generating "etcd/peer" certificate and key
-[certs] etcd/peer serving cert is signed for DNS names [localhost isiem-k8s-cp-1] and IPs [172.18.0.118 127.0.0.1 ::1]
-[certs] Generating "apiserver-etcd-client" certificate and key
-[certs] Valid certificates and keys now exist in "/etc/kubernetes/pki"
-[certs] Using the existing "sa" key
-[kubeconfig] Generating kubeconfig files
-[kubeconfig] Using kubeconfig folder "/etc/kubernetes"
-[kubeconfig] Writing "admin.conf" kubeconfig file
-[kubeconfig] Writing "controller-manager.conf" kubeconfig file
-[kubeconfig] Writing "scheduler.conf" kubeconfig file
-[control-plane] Using manifest folder "/etc/kubernetes/manifests"
-[control-plane] Creating static Pod manifest for "kube-apiserver"
-[control-plane] Creating static Pod manifest for "kube-controller-manager"
-[control-plane] Creating static Pod manifest for "kube-scheduler"
-[check-etcd] Checking that the etcd cluster is healthy
-
-error: error execution phase check-etcd: etcd cluster is not healthy: failed to dial endpoint https://172.18.0.118:2379 with maintenance client: context deadline exceeded
-To see the stack trace of this error execute with --v=5 or higher
-[root@isu-k8s-cp-1 ~]#
-
-Final diagnosis (very clear now)
-Your join keeps failing at the same place:
-
-This means:
-
-The existing etcd cluster still thinks an old member
-(172.18.0.118 / isu-k8s-cp-1) exists
-That member is dead / stale
-When kubeadm tries to add this node back, etcd blocks it, Wiping /var/lib/etcd locally is NOT enough
-You must remove the stale etcd member from the cluster first
-This is classic HA control-plane recovery 
-You’re doing the right thing.
-
-
-Solution is:
-
-Correct Recovery Procedure (SUPPORTED & SAFE)
-We’ll do this in 3 clean phases:
-Remove stale etcd member (from a healthy CP)
-Clean this node fully
-Rejoin control-plane successfully
-
-STEP 1: Remove stale etcd member (DO THIS ON A HEALTHY CP)
-
-Log into isiem-k8s-cp-2 or isiem-k8s-cp-3
-(any control-plane that is Ready)
-
-1. List etcd members
-
-[isiem@isiem-k8s-cp-2 ~]
-$ kubectl -n kube-system exec -it etcd-isiem-k8s-cp-2 -- etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt --key=/etc/kubernetes/pki/etcd/healthcheck-client.key member list 
-
-3e408abe6b7e7655, started, isiem-k8s-cp-1, https://172.18.0.118:2380, https://172.18.0.118:2379, false 538bc9b10534ce6e, started, isiem-k8s-cp-2, https://172.26.0.101:2380, https://172.26.0.101:2379, false e376da2b85937099, started, isiem-k8s-cp-3, https://10.10.1.34:2380, https://10.10.1.34:2379, false 
-[isiem@isiem-k8s-cp-2 ~]
-$
-
-What this shows
-3e408abe6b7e7655, started, isiem-k8s-cp-1, https://172.18.0.118:2380
-
-Even though isu-k8s-cp-1 is broken, etcd still thinks:
-
-member isiem-k8s-cp-1
-peer IP 172.18.0.118
-status started (but it’s lying — it’s unreachable)
-
-This is why kubeadm join fails every time
-etcd quorum will not accept a re-add until this member is removed
-
-
-STEP: 2 REMOVE THE STALE ETCD MEMBER
-
-Run this ONLY on isiem-k8s-cp-2 (where you already are)
-
-Remove member isiem-k8s-cp-1
-
-# kubectl -n kube-system exec -it etcd-isiem-k8s-cp-2 -- \
-  etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
-  --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
-  member remove 3e408abe6b7e7655
-
-
-Expected output:
-
-Member 3e408abe6b7e7655 removed from cluster
-
-
-Verify removal (important)
-
-# kubectl -n kube-system exec -it etcd-isiem-k8s-cp-2 -- \
-  etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
-  --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
-  member list
-
-You should now see only cp-2 and cp-3.
-
-
-STEP: 3 FINAL REJOIN (ONE LAST TIME)
-
-Go back to isu-k8s-cp-1
-
-Full cleanup-
-
-sudo systemctl stop kubelet
-sudo rm -rf /etc/kubernetes
-sudo rm -rf /var/lib/etcd
-sudo rm -rf /var/lib/kubelet
-sudo systemctl start kubelet
-
-
-get join command from any controlplane:
-
-
-# kubeadm token create --print-join-command
-
-
-Rejoin control-plane (this time it WILL pass check-etcd)
-
-# sudo kubeadm join isiem.proxyhost.lan:6443 \
-  --token 6wrnas.dolxdiwim7zzjeck \
-  --discovery-token-ca-cert-hash sha256:67446740688bd8ba9d3b00b938d1e55f81744d91684d58d5f6b25e7a3468eb0f \
-  --control-plane \
-  --certificate-key db5b8ab390fd248d22b433ae2c8df0979215e6c675864aac69cee5d294952f6d
-
-# kubectl get nodes
-
-Why this fixed everything ?
-
-etcd membership is authoritative
-kubeadm cannot overwrite existing members
-removing the stale member restores quorum logic
-rejoin adds it back cleanly with fresh certs
-This was a real HA control-plane recovery, not a beginner issue.
-
-
-# kubectl -n kube-system exec -it etcd-isiem-k8s-cp-2 -- \
-  etcdctl \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
-  --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
-  member list
-
-
+    serverCertSANs: ["localhost", "127.0.0.1", "172.18.0.101", "172.26.0.8", "10.10.1.26"]
+    peerCertSANs:   ["localhost", "127.0.0.1", "172.18.0.101", "172.26.0.8", "10.10.1.26"]
+ 
+5.3 Join the 3rd control plane (gcp-k8s-master):
+ 
+# sudo kubeadm join stage.proxyhost.lan:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash> \
+    --control-plane \
+    --certificate-key <cert-key>
+ 
+5.4 Join worker nodes (CPU and GPU pools):
+ 
+# kubeadm join stage.proxyhost.lan:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash>
+ 
+5.5 Verify:
+ 
+# kubectl get nodes -o wide
+ 
+ 
+====================================================================
+PHASE 6 - CILIUM CNI
+====================================================================
+ 
+Install the Gateway API CRDs first (use the Gateway API release that
+matches your Cilium version), then:
+ 
 # helm repo add cilium https://helm.cilium.io/
 # helm repo update
 # helm install cilium cilium/cilium --version 1.18.5 \
-  --namespace kube-system \
-  --set gatewayAPI.enabled=true \
-  --set gatewayAPI.hostNetwork.enabled=true \
-  --set envoy.enabled=true \
-  --set kubeProxyReplacement=true \
-  --set k8sServiceHost=$CONTROL_PLANE_IP \
-  --set k8sServicePort=6443 \
-  --set nodePort.enabled=true \
-  --set hubble.relay.enabled=true \
-  --set hubble.ui.enabled=false \
-  --set hubble.metrics.enabled="{dns,drop,tcp,flow,icmp,http}" \
-  --set prometheus.enabled=true \
-  --set operator.prometheus.enabled=true
-
-
-
-FAILURE CASE 2:
-
-
-If you change the hostname of worker/control-plane node then also kubelet will fail as local hostname changed due to it still looking for the address earlier kubeadm 
-
-# sudo systemctl stop kubelet
-# sudo systemctl stop crio
-# sudo rm -rf /etc/kubernetes
-# sudo rm -rf /var/lib/etcd
-# sudo rm -rf /var/lib/kubelet
-
-# sudo mount | grep /var/lib/kubelet | awk '{print $3}' | xargs -r sudo umount -l
-# mount | grep /var/lib/kubelet || echo "All kubelet mounts cleared"
-
-# sudo systemctl stop kubelet
-# sudo systemctl stop crio
-# sudo systemctl status crio
-
-Make sure you have updated your new local dns with your updated hostname inside "/etc/hosts".
-
-[isiem@k8s-isu-worker-7 ~]$ cat /etc/hosts
-# Your system has configured 'manage_etc_hosts' as True.
-# As a result, if you wish for changes to this file to persist
-# then you will need to either
-# a.) make changes to the master file in /etc/cloud/templates/hosts.redhat.tmpl
-# b.) change or remove the value of 'manage_etc_hosts' in
-#     /etc/cloud/cloud.cfg or cloud-config from user-data
-#
-# The following lines are desirable for IPv4 capable hosts
-127.0.0.1 k8s-isu-worker-7 k8s-isu-worker-7
-127.0.0.1 localhost.localdomain localhost
-127.0.0.1 localhost4.localdomain4 localhost4
-
-# The following lines are desirable for IPv6 capable hosts
-::1 k8s-isu-worker-7 k8s-isu-worker-7
-::1 localhost.localdomain localhost
-::1 localhost6.localdomain6 localhost6
-10.10.1.33 isiem.proxyhost.lan
-[isiem@k8s-isu-worker-7 ~]$
+    --namespace kube-system \
+    --set kubeProxyReplacement=true \
+    --set k8sServiceHost=stage.proxyhost.lan \
+    --set k8sServicePort=6443 \
+    --set gatewayAPI.enabled=true \
+    --set gatewayAPI.hostNetwork.enabled=true \
+    --set envoy.enabled=true \
+    --set nodePort.enabled=true \
+    --set hubble.relay.enabled=true \
+    --set hubble.ui.enabled=false \
+    --set hubble.metrics.enabled="{dns,drop,tcp,flow,icmp,http}" \
+    --set prometheus.enabled=true \
+    --set operator.prometheus.enabled=true
  
-
-Then re-generate print join command with any of the control-plane.
-
-# kubeadm token create --print-join-command
-
-
-Then join the worker-node.
-
-[isiem@k8s-isu-worker-7 ~]$ sudo kubeadm join isiem.proxyhost.lan:6443 --token gj68c0.0hcqz3glqh6a4eqk --discovery-token-ca-cert-hash sha256:67446740688bd8ba9d3b00b938d1e55f81744d91684d58d5f6b25e7a3468eb0f
-
-
-
-Dynamic local disks from storageclass (PV):
-
-# kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
-
+# kubectl -n kube-system get pods -l k8s-app=cilium
+# kubectl get nodes     # all nodes should become Ready
+ 
+ 
+====================================================================
+PHASE 7 - PERSISTENT STORAGE
+====================================================================
+ 
+Choose ONE option below. Do not create two StorageClasses with the
+same name.
+ 
+--------------------------------------------------------------------
+Option A - Local path provisioner (dynamic local disks)
+--------------------------------------------------------------------
+ 
+Pin the manifest to a release tag instead of "master" so installs are
+reproducible (see https://github.com/rancher/local-path-provisioner/releases):
+ 
+# kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/<release-tag>/deploy/local-path-storage.yaml
+ 
 # kubectl get pods -n local-path-storage
 # kubectl get sc
-
-O/p-
+ 
+Output:
 local-path   rancher.io/local-path
-
-
-will create PV directories on the node where the pod is scheduled, under:
-
-/opt/local-path-provisioner/
-
-
-Example:
-/opt/local-path-provisioner/pvc-3c2b6e5f-9d2a-4b8e-b3e9-1f2a9c2d1a44
-
-
-Each PVC → one directory → one PV.
-
-
-kubectl get configmap local-path-config -n local-path-storage -o yaml
-
-
-data:
-  config.json: |
-    {
-      "nodePathMap":[
-        {
-          "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
-          "paths":["/opt/local-path-provisioner"]
-        }
-      ]
-    }
-
-
-How to change the host path (RECOMMENDED for isiem)
-
-For isiem, you should not use /opt.
-Use a dedicated disk, e.g.:
-
-/data/isiem
-
-
-Step 1: Create directory on ALL worker nodes
-mkdir -p /var/lib/k8s
-chmod 777 /var/lib/k8s
-
-
-Step 2: kubectl edit configmap local-path-config -n local-path-storage
-
-
-Change to:
-
+ 
+By default PV directories are created on the node where the pod is
+scheduled, under /opt/local-path-provisioner/ (one PVC = one directory).
+ 
+# kubectl get configmap local-path-config -n local-path-storage -o yaml
+ 
+Change the host path (RECOMMENDED): do not use /opt, use a dedicated
+disk or directory, for example /var/lib/k8s.
+ 
+Step 1 - create the directory on ALL worker nodes:
+ 
+# mkdir -p /var/lib/k8s
+# chmod 755 /var/lib/k8s
+ 
+Step 2 - edit the ConfigMap:
+ 
+# kubectl edit configmap local-path-config -n local-path-storage
+ 
 data:
   config.json: |
     {
@@ -710,45 +559,286 @@ data:
         }
       ]
     }
-
-   
-Step 3: Restart provisioner
-kubectl rollout restart deployment local-path-provisioner -n local-path-storage
-
-
-Now, you can create storageclass as mentioned for dynamically creation of PV.
-
+ 
+Step 3 - restart the provisioner:
+ 
+# kubectl rollout restart deployment local-path-provisioner -n local-path-storage
+ 
+Step 4 - create the StorageClass:
+ 
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: isiem-storage
+  name: stage-storage
 provisioner: rancher.io/local-path
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Retain
-
-
------
-
-
-For nfs mount:
-
-
-helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
-
-helm repo update
-
-helm install nfs-provisioner   nfs-subdir-external-provisioner/nfs-subdir-external-provisioner   --set nfs.server=172.26.0.114   --set nfs.path=/nas   --set storageClass.name=isiem-storage   --set storageClass.defaultClass=true
-
+ 
+--------------------------------------------------------------------
+Option B - NFS provisioner
+--------------------------------------------------------------------
+ 
+# helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner
+# helm repo update
+ 
+# helm install nfs-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
+    --set nfs.server=<NFS_SERVER_IP> \
+    --set nfs.path=/nas \
+    --set storageClass.name=stage-storage \
+    --set storageClass.defaultClass=true
+ 
+The chart already creates the StorageClass. Only create one manually
+if you need custom settings (use a different name or delete the chart's
+class first):
+ 
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: isiem-storage
+  name: stage-storage
 provisioner: cluster.local/nfs-provisioner-nfs-subdir-external-provisioner
 parameters:
-    archiveOnDelete: "true"
+  archiveOnDelete: "true"
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
 allowVolumeExpansion: true
-
-
-
+ 
+Note: install the NFS client packages on every node that mounts NFS
+(Rocky: dnf install nfs-utils, Ubuntu: apt install nfs-common).
+ 
+ 
+====================================================================
+PHASE 8 - GPU INSTANCE POOLS FOR ML APPLICATIONS
+====================================================================
+ 
+Join the Ubuntu GPU instances as normal workers (Phases 3.4 and 5.4),
+then label and taint them so only GPU workloads land there:
+ 
+# kubectl label node <gpu-node> node-pool=gpu
+# kubectl taint node <gpu-node> nvidia.com/gpu=true:NoSchedule
+ 
+Install the NVIDIA GPU Operator (driver, container toolkit, device plugin):
+ 
+# helm repo add nvidia https://helm.ngc.nvidia.com/nvidia && helm repo update
+# helm install gpu-operator nvidia/gpu-operator \
+    --namespace gpu-operator --create-namespace
+ 
+Driver already installed on the host? Add: --set driver.enabled=false
+Check the GPU Operator docs for your version regarding CRI-O container
+toolkit settings, since the flags change between releases.
+ 
+Verify GPUs are advertised:
+ 
+# kubectl describe node <gpu-node> | grep -i "nvidia.com/gpu"
+ 
+Example ML deployment pinned to the GPU pool:
+ 
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ml-inference
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ml-inference
+  template:
+    metadata:
+      labels:
+        app: ml-inference
+    spec:
+      nodeSelector:
+        node-pool: gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: model-server
+          image: <your-registry>/ml-inference:<tag>
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+ 
+ 
+====================================================================
+FAILURE CASE 1 - STALE ETCD MEMBER (CONTROL-PLANE REJOIN)
+====================================================================
+ 
+Symptom: a control plane was rebuilt or re-provisioned, and rejoin
+fails at the check-etcd phase:
+ 
+  error execution phase check-etcd: etcd cluster is not healthy:
+  failed to dial endpoint https://172.18.0.101:2379 with maintenance
+  client: context deadline exceeded
+ 
+Diagnosis: the existing etcd cluster still lists the old member
+(isu-k8s-cp, 172.18.0.101) as "started", but it is dead. etcd
+membership is authoritative; kubeadm cannot overwrite an existing
+member. Wiping /var/lib/etcd on the broken node is NOT enough. The
+stale member must be removed from the cluster first.
+ 
+WARNING: with 3 members you can lose 1 and keep quorum (2 of 3). Do
+NOT run this if 2 members are down; that needs an etcd snapshot restore.
+ 
+STEP 1 - On a HEALTHY control plane (stpi-k8s-master or gcp-k8s-master),
+list the etcd members:
+ 
+# kubectl -n kube-system exec -it etcd-stpi-k8s-master -- etcdctl \
+    --endpoints=https://127.0.0.1:2379 \
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+    --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
+    --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
+    member list
+ 
+Example output (IDs are examples):
+<hex-id-1>, started, isu-k8s-cp,      https://172.18.0.101:2380, https://172.18.0.101:2379, false
+<hex-id-2>, started, stpi-k8s-master, https://172.26.0.8:2380,   https://172.26.0.8:2379,   false
+<hex-id-3>, started, gcp-k8s-master,  https://10.10.1.26:2380,   https://10.10.1.26:2379,   false
+ 
+STEP 2 - Remove the stale member by its hex ID, verify, then delete
+the old node object:
+ 
+# kubectl -n kube-system exec -it etcd-stpi-k8s-master -- etcdctl \
+    --endpoints=https://127.0.0.1:2379 \
+    --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+    --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
+    --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
+    member remove <STALE_MEMBER_HEX_ID>
+ 
+Expected: Member <STALE_MEMBER_HEX_ID> removed from cluster
+ 
+Run "member list" again: only stpi-k8s-master and gcp-k8s-master
+should remain.
+ 
+# kubectl delete node isu-k8s-cp
+ 
+STEP 3 - On the BROKEN node (isu-k8s-cp), clean all state:
+ 
+# kubeadm reset -f
+# systemctl stop kubelet
+# rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet /etc/cni/net.d
+# systemctl restart crio
+ 
+STEP 4 - On a healthy control plane, generate a fresh token and
+certificate key:
+ 
+# kubeadm token create --print-join-command
+# kubeadm init phase upload-certs --upload-certs
+ 
+STEP 5 - Rejoin the control plane on the broken node:
+ 
+# sudo kubeadm join stage.proxyhost.lan:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash> \
+    --control-plane \
+    --certificate-key <cert-key>
+ 
+# kubectl get nodes
+ 
+Why this works: removing the stale member restores quorum logic, and
+the rejoin adds the node back cleanly with fresh certificates.
+ 
+ 
+====================================================================
+FAILURE CASE 2 - HOSTNAME CHANGED ON A NODE
+====================================================================
+ 
+Symptom: kubelet fails with: node "old-name" not found. The kubelet
+credentials still belong to the old node name.
+ 
+On the affected node:
+ 
+# sudo systemctl stop kubelet
+# sudo systemctl stop crio
+# sudo rm -rf /etc/kubernetes /var/lib/etcd /var/lib/kubelet
+ 
+Clear leftover kubelet mounts:
+ 
+# sudo mount | grep /var/lib/kubelet | awk '{print $3}' | xargs -r sudo umount -l
+# mount | grep /var/lib/kubelet || echo "All kubelet mounts cleared"
+ 
+Confirm the services are stopped:
+ 
+# sudo systemctl status kubelet crio
+ 
+Update /etc/hosts with the NEW hostname and the floating IP entry:
+ 
+127.0.0.1 <new-hostname>
+::1       <new-hostname>
+10.10.1.100 stage.proxyhost.lan
+ 
+On a healthy control plane, remove the old node object and create a
+fresh join command:
+ 
+# kubectl delete node <old-hostname>
+# kubeadm token create --print-join-command
+ 
+Back on the node, restart the runtime and rejoin:
+ 
+# sudo systemctl start crio
+# sudo kubeadm join stage.proxyhost.lan:6443 \
+    --token <token> \
+    --discovery-token-ca-cert-hash sha256:<hash>
+ 
+(or run: bash slave-nodes.sh)
+ 
+ 
+====================================================================
+FAILURE CASE 3 - FLOATING IP NOT FAILING OVER
+====================================================================
+ 
+Symptom: the VIP stays on a dead node, or appears on BOTH HAProxy
+nodes (split-brain).
+ 
+Which node holds the VIP?
+# ip addr show eth0 | grep 10.10.1.100
+ 
+Check Keepalived and HAProxy on both nodes:
+# systemctl status keepalived haproxy
+# journalctl -u keepalived --since "10 min ago"
+ 
+Common causes to verify:
+- VRRP (protocol 112) blocked by firewalld or a network ACL between
+  the two HAProxy nodes
+- Different virtual_router_id on the two nodes, or wrong
+  unicast_src_ip / unicast_peer
+- HAProxy nodes not in the same L2 segment
+- HAProxy not running on the MASTER, so the health check keeps
+  lowering its priority
+ 
+ 
+====================================================================
+FAILURE CASE 4 - GPU NOT DETECTED ON A NODE
+====================================================================
+ 
+Check the GPU Operator pods on the node:
+# kubectl -n gpu-operator get pods -o wide | grep <gpu-node>
+ 
+Confirm the driver sees the GPU (run on the GPU node):
+# nvidia-smi
+ 
+Confirm Kubernetes advertises it:
+# kubectl describe node <gpu-node> | grep -A2 "nvidia.com/gpu"
+ 
+Common causes to verify:
+- Node is missing the node-pool=gpu label, or GPU workloads lack the
+  matching toleration
+- Kernel headers missing, or Secure Boot blocking the NVIDIA driver
+  on the Ubuntu node
+- Driver installed on the host AND operator-managed driver enabled at
+  the same time (set driver.enabled=false if the host provides it)
+- Container toolkit not configured for CRI-O on that node
+ 
+ 
+====================================================================
+FAILOVER BEHAVIOUR SUMMARY
+====================================================================
+HAProxy-1 (MASTER) down      -> Keepalived on HAProxy-2 takes the VIP,
+                                no kubeconfig changes needed
+HAProxy process crashes      -> health check fails, priority drops,
+                                VIP moves to BACKUP
+One control plane down       -> HAProxy removes it from the pool,
+                                etcd keeps quorum (2 of 3)
+MASTER recovers              -> higher priority reclaims the VIP
+GPU node down                -> pods reschedule onto remaining GPU
+                                nodes if capacity exists
