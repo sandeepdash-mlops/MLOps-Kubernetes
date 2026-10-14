@@ -12,7 +12,7 @@
 
 <br/>
 
-> **End-to-end production setup for a cross-network HA Kubernetes cluster spanning multiple regions and cloud/on-prem nodes — featuring HAProxy load balancing, etcd quorum management, persistent storage, and RBAC — built for hybrid enterprise infrastructure with security and compliance in mind.**
+> **End-to-end automation for a production-grade, highly available Kubernetes cluster that spans multiple regions, public cloud providers, and bank private on-prem networks. A Keepalived floating IP serves as the control plane advertise address, fronted by two HAProxy load balancers for failover. The setup covers etcd quorum management, persistent storage, and RBAC, with dedicated GPU instance pools for deploying ML applications, all designed for security and compliance in regulated hybrid enterprise environments.**
 
 </div>
 
