@@ -18,7 +18,6 @@
 <p align="center"><b>End-to-end automation for a production-grade, highly available Kubernetes cluster that spans multiple regions, public cloud providers, and bank private on-prem networks. A Keepalived floating IP serves as the stable control plane endpoint, running between two HAProxy load balancers for failover. The setup covers etcd quorum management, persistent storage, and RBAC.</b></p>
 <p align="center"><b>Dedicated GPU instance pools support ML application deployments, all designed for security and compliance in regulated hybrid enterprise environments.</b></p>
 </blockquote>
----
  
 ## 📌 What This Project Solves
  
