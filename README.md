@@ -1,5 +1,5 @@
 <div align="center">
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a3a2a,100:16a34a&height=220&section=header&text=Devops-K8s&fontSize=90&fontColor=ffffff&fontAlignY=38&desc=Hybrid%20Multi-Cloud%20HA%20Kubernetes%20for%20ML%20Workloads&descAlignY=66&descSize=22&descColor=86efac" alt="Devops-K8s Banner"/>
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0d1117,50:1a3a2a,100:16a34a&height=220&section=header&text=MLOps-Kubernetes&fontSize=90&fontColor=ffffff&fontAlignY=38&desc=Hybrid%20Multi-Cloud%20HA%20Kubernetes%20for%20ML%20Workloads&descAlignY=66&descSize=22&descColor=86efac" alt="MLOps-Kubernetes Banner"/>
 </div>
 <p align="center">
 <a href="https://kubernetes.io/"><img src="https://img.shields.io/badge/Kubernetes-1.32-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white" alt="Kubernetes"/></a>
@@ -143,7 +143,7 @@ flowchart LR
 ## 📁 Repository Structure
  
 ```
-Devops-K8s/
+MLOps-Kubernetes/
 ├── hybrid-multi-region-ha-cluster-setup.txt  # 📖 Complete manual setup reference guide
 ├── slave-nodes.sh                            # 👷 Worker node join helper script
 ├── RBAC-Kubernetes/
