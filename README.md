@@ -144,7 +144,7 @@ flowchart LR
  
 ```
 MLOps-Kubernetes/
-├── hybrid-multi-region-ha-cluster-setup.txt  # 📖 Complete manual setup reference guide
+├── ha-cluster-setup.txt  # 📖 Complete manual setup reference guide
 ├── slave-nodes.sh                            # 👷 Worker node join helper script
 ├── RBAC-Kubernetes/
 │   ├── create-linux-user.sh                  # 👤 Create OS-level user on node
@@ -159,7 +159,7 @@ MLOps-Kubernetes/
  
 ## 🛠️ Setup Guide
  
-The full step-by-step manual setup is documented in **`hybrid-multi-region-ha-cluster-setup.txt`**.
+The full step-by-step manual setup is documented in **`ha-cluster-setup.txt`**.
  
 Below is a high-level summary of the setup phases. IPs, interface names and hostnames are examples, so replace them with your own. `stage.proxyhost.lan` is the DNS name (or `/etc/hosts` entry) that resolves to the **Keepalived floating IP**.
  
@@ -434,7 +434,7 @@ spec:
               nvidia.com/gpu: 1
 ```
  
-> 📖 For complete commands, configs, and troubleshooting, refer to **`hybrid-multi-region-ha-cluster-setup.txt`**
+> 📖 For complete commands, configs, and troubleshooting, refer to **`ha-cluster-setup.txt`**
  
 ---
  
