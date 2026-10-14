@@ -1,0 +1,54 @@
+---
+# Post-deployment checks, executed on the first control plane.
+- name: Verify cluster health
+  hosts: control_plane[0]
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait until every node reports Ready
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", wait, --for=condition=Ready, node, --all, --timeout=300s]
+      changed_when: false
+
+    - name: List nodes
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", get, nodes, -o, wide]
+      register: verify_nodes
+      changed_when: false
+
+    - name: Show nodes
+      ansible.builtin.debug:
+        var: verify_nodes.stdout_lines
+
+    - name: Find GPU nodes
+      ansible.builtin.command:
+        argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", get, nodes, -l, node-pool=gpu, -o, name]
+      register: verify_gpu_nodes
+      changed_when: false
+
+    - name: Wait until GPU nodes advertise nvidia.com/gpu capacity
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ admin_kubeconfig }}"
+          - get
+          - nodes
+          - -l
+          - node-pool=gpu
+          - -o
+          - 'jsonpath={range .items[*]}{.status.allocatable.nvidia\.com/gpu}{"\n"}{end}'
+      register: verify_gpu_capacity
+      changed_when: false
+      retries: 30
+      delay: 20
+      until: >-
+        verify_gpu_capacity.stdout_lines | length > 0 and
+        (verify_gpu_capacity.stdout_lines | select('match', '^[1-9][0-9]*$') | list | length)
+        == (verify_gpu_capacity.stdout_lines | length)
+      when: verify_gpu_nodes.stdout_lines | length > 0
+
+    - name: Show GPU capacity per node
+      ansible.builtin.debug:
+        msg: "GPU nodes: {{ verify_gpu_nodes.stdout_lines }}, allocatable GPUs: {{ verify_gpu_capacity.stdout_lines | default([]) }}"

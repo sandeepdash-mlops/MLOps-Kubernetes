@@ -1,0 +1,4 @@
+---
+container_runtime_repo_version: "v{{ k8s_version }}"
+container_runtime_cgroup_manager: systemd
+container_runtime_repo_base: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/{{ container_runtime_repo_version }}"

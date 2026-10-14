@@ -1,0 +1,35 @@
+---
+# All kubectl calls run on a control plane (workers have no admin kubeconfig).
+- name: Wait until the node is registered with the API server
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", get, node, "{{ k8s_node_name }}", -o, name]
+  delegate_to: "{{ kubectl_delegate_host }}"
+  register: node_labels_registered
+  until: node_labels_registered.rc == 0
+  retries: "{{ node_labels_retries }}"
+  delay: "{{ node_labels_delay }}"
+  changed_when: false
+
+- name: Label the node with its pool (cpu or gpu)
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", label, node, "{{ k8s_node_name }}", "node-pool={{ node_pool }}", --overwrite]
+  delegate_to: "{{ kubectl_delegate_host }}"
+  register: node_labels_label
+  changed_when: "'not labeled' not in node_labels_label.stdout"
+
+- name: Read the current taint keys of the node
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", get, node, "{{ k8s_node_name }}", -o, 'jsonpath={.spec.taints[*].key}']
+  delegate_to: "{{ kubectl_delegate_host }}"
+  register: node_labels_taints
+  changed_when: false
+  when: node_pool == 'gpu'
+
+- name: Taint GPU nodes so only GPU workloads are scheduled there
+  ansible.builtin.command:
+    argv: [kubectl, --kubeconfig, "{{ admin_kubeconfig }}", taint, node, "{{ k8s_node_name }}", "{{ node_taint }}"]
+  delegate_to: "{{ kubectl_delegate_host }}"
+  changed_when: true
+  when:
+    - node_pool == 'gpu'
+    - node_taint_key not in node_labels_taints.stdout.split()

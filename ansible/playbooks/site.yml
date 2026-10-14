@@ -1,0 +1,10 @@
+---
+# End-to-end run: bootstrap workers -> GPU Operator -> verification.
+- name: Bootstrap workers
+  ansible.builtin.import_playbook: bootstrap-workers.yml
+
+- name: Deploy GPU Operator
+  ansible.builtin.import_playbook: gpu-operator.yml
+
+- name: Verify cluster
+  ansible.builtin.import_playbook: verify-cluster.yml

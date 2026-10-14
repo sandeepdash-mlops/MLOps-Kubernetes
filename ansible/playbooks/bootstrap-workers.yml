@@ -1,0 +1,47 @@
+---
+# One playbook for every worker. The OS family picks the profile:
+#   RedHat family (Rocky Linux 9.x) -> cpu worker
+#   Debian family (Ubuntu 22.04)    -> gpu worker (adds role gpu_node)
+# Roles dispatch to <redhat|debian>.yml task files internally.
+- name: Bootstrap Kubernetes worker nodes
+  hosts: workers
+  become: true
+  gather_facts: true
+  serial: "{{ bootstrap_batch_size | default('100%') }}"
+
+  pre_tasks:
+    - name: Fail fast on unsupported operating systems
+      ansible.builtin.assert:
+        that: ansible_os_family in ['RedHat', 'Debian']
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ ansible_distribution }} ({{ ansible_os_family }}).
+          Supported: Rocky Linux / RHEL family (cpu) and Ubuntu / Debian family (gpu).
+        quiet: true
+      tags: [always]
+
+    - name: Show the profile selected for this node
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          ({{ ansible_os_family }}) -> {{ node_pool | upper }} worker profile
+      tags: [always]
+
+  roles:
+    - role: common
+      tags: [common]
+    - role: selinux
+      when: ansible_os_family == 'RedHat'
+      tags: [selinux]
+    - role: firewall
+      tags: [firewall]
+    - role: container_runtime
+      tags: [runtime]
+    - role: kubernetes_node
+      tags: [kubernetes]
+    - role: gpu_node
+      when: node_pool == 'gpu'
+      tags: [gpu]
+    - role: node_join
+      tags: [join]
+    - role: node_labels
+      tags: [labels]

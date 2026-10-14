@@ -1,0 +1,36 @@
+---
+- name: Check that the Helm binary is available on the control plane
+  ansible.builtin.command: helm version --short
+  register: gpu_operator_helm
+  changed_when: false
+  failed_when: false
+
+- name: Fail with guidance when Helm is missing
+  ansible.builtin.assert:
+    that: gpu_operator_helm.rc == 0
+    fail_msg: "Helm 3 is required on {{ inventory_hostname }}. Install it first: https://helm.sh/docs/intro/install/"
+    quiet: true
+
+- name: Add the NVIDIA Helm repository
+  kubernetes.core.helm_repository:
+    name: nvidia
+    repo_url: "{{ gpu_operator_repo_url }}"
+
+- name: Install or upgrade the NVIDIA GPU Operator
+  kubernetes.core.helm:
+    name: "{{ gpu_operator_release }}"
+    chart_ref: nvidia/gpu-operator
+    chart_version: "{{ gpu_operator_chart_version | default(omit, true) }}"
+    release_namespace: "{{ gpu_operator_namespace }}"
+    create_namespace: true
+    kubeconfig: "{{ admin_kubeconfig }}"
+    update_repo_cache: true
+    wait: true
+    wait_timeout: "{{ gpu_operator_wait_timeout }}"
+    values:
+      driver:
+        enabled: "{{ gpu_operator_driver_enabled | bool }}"
+      toolkit:
+        enabled: "{{ gpu_operator_toolkit_enabled | bool }}"
+      operator:
+        defaultRuntime: "{{ gpu_operator_default_runtime }}"

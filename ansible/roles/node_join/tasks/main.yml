@@ -1,0 +1,31 @@
+---
+- name: Check whether the node is already part of a cluster
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: node_join_kubelet_conf
+
+- name: Join the node to the cluster
+  when: not node_join_kubelet_conf.stat.exists
+  block:
+    - name: Check the API endpoint is reachable through the floating IP
+      ansible.builtin.wait_for:
+        host: "{{ cluster_api_dns }}"
+        port: "{{ cluster_api_port }}"
+        timeout: "{{ node_join_endpoint_timeout }}"
+
+    # The token is created on demand, lives for a few minutes and is never
+    # stored in the repository.
+    - name: Create a short-lived join command on a control plane
+      ansible.builtin.command:
+        argv: [kubeadm, token, create, --print-join-command, --ttl, "{{ node_join_token_ttl }}"]
+      delegate_to: "{{ kubectl_delegate_host }}"
+      register: node_join_command
+      changed_when: true
+      no_log: "{{ node_join_no_log | bool }}"
+
+    - name: Run kubeadm join
+      ansible.builtin.command: "{{ node_join_command.stdout | trim }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      register: node_join_result
+      no_log: "{{ node_join_no_log | bool }}"

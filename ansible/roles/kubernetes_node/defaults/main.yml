@@ -1,0 +1,8 @@
+---
+kubernetes_node_repo_version: "v{{ k8s_version }}"
+kubernetes_node_repo_base: "https://pkgs.k8s.io/core:/stable:/{{ kubernetes_node_repo_version }}"
+kubernetes_node_packages:
+  - kubelet
+  - kubeadm
+  - kubectl
+kubernetes_node_kubelet_nofile: 65000

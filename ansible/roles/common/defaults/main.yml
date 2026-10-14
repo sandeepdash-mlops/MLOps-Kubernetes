@@ -1,0 +1,36 @@
+---
+common_manage_hostname: true
+
+common_kernel_modules:
+  - overlay
+  - br_netfilter
+
+common_sysctl_params:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1
+
+common_packages_redhat:
+  - curl
+  - wget
+  - vim
+  - bash-completion
+  - nc
+  - tcpdump
+  - telnet
+  - bind-utils
+  - gnupg2
+  - ca-certificates
+
+common_packages_debian:
+  - curl
+  - wget
+  - vim
+  - bash-completion
+  - netcat-openbsd
+  - tcpdump
+  - telnet
+  - dnsutils
+  - gnupg
+  - ca-certificates
+  - apt-transport-https

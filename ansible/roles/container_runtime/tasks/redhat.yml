@@ -1,0 +1,17 @@
+---
+- name: Configure the CRI-O yum repository
+  ansible.builtin.yum_repository:
+    name: cri-o
+    description: CRI-O
+    baseurl: "{{ container_runtime_repo_base }}/rpm/"
+    gpgcheck: true
+    gpgkey: "{{ container_runtime_repo_base }}/rpm/repodata/repomd.xml.key"
+    enabled: true
+
+- name: Install CRI-O
+  ansible.builtin.dnf:
+    name:
+      - container-selinux
+      - cri-o
+    state: present
+    update_cache: true

@@ -1,0 +1,5 @@
+---
+node_join_token_ttl: 30m
+node_join_endpoint_timeout: 60
+# Set to false (e.g. -e node_join_no_log=false) to see join errors while debugging.
+node_join_no_log: true

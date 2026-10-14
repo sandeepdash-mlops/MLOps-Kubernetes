@@ -1,0 +1,6 @@
+---
+# RedHat family only (guarded in the playbook).
+- name: Set SELinux mode (runtime and persistent)
+  ansible.posix.selinux:
+    policy: "{{ selinux_policy }}"
+    state: "{{ selinux_state }}"

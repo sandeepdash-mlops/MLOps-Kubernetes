@@ -1,0 +1,32 @@
+---
+- name: Install CRI-O for this OS family
+  ansible.builtin.include_tasks: "{{ ansible_os_family | lower }}.yml"
+
+- name: Create the CRI-O drop-in directory
+  ansible.builtin.file:
+    path: /etc/crio/crio.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure the CRI-O cgroup manager
+  ansible.builtin.copy:
+    dest: /etc/crio/crio.conf.d/02-cgroup-manager.conf
+    content: |
+      [crio.runtime]
+      cgroup_manager = "{{ container_runtime_cgroup_manager }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart crio
+
+- name: Enable and start CRI-O
+  ansible.builtin.systemd:
+    name: crio
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Apply pending CRI-O handlers now (the node must be ready before joining)
+  ansible.builtin.meta: flush_handlers

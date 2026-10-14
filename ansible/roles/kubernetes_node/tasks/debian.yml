@@ -1,0 +1,34 @@
+---
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: "{{ kubernetes_node_repo_base }}/deb/Release.key"
+    dest: /etc/apt/keyrings/kubernetes.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the Kubernetes apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/kubernetes.asc] {{ kubernetes_node_repo_base }}/deb/ /"
+    filename: kubernetes
+    state: present
+
+- name: Install Kubernetes packages
+  ansible.builtin.apt:
+    name: "{{ kubernetes_node_packages }}"
+    state: present
+    update_cache: true
+
+- name: Hold Kubernetes packages (upgrade only through kubeadm)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ kubernetes_node_packages }}"

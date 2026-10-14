@@ -1,0 +1,36 @@
+---
+# =====================================================================
+# Cluster-wide variables (single source of truth)
+# =====================================================================
+cluster_name: mlops-k8s
+k8s_version: "1.32"                      # Kubernetes and CRI-O minor version
+
+# Control plane endpoint = Keepalived floating IP (never one HAProxy node)
+cluster_api_vip: "10.10.1.100"
+cluster_api_dns: "stage.proxyhost.lan"
+cluster_api_port: 6443
+
+# Where kubeadm / kubectl admin commands are delegated (first control plane)
+kubectl_delegate_host: "{{ groups['control_plane'][0] }}"
+admin_kubeconfig: /etc/kubernetes/admin.conf
+
+# The node name Kubernetes registers == inventory name (enforced by role common)
+k8s_node_name: "{{ inventory_hostname }}"
+
+# ---------------------------------------------------------------------
+# THE SWITCH - the OS family selects the worker profile:
+#   RedHat (Rocky Linux 9.x) -> cpu  (general workers)
+#   Debian (Ubuntu 22.04)    -> gpu  (NVIDIA GPU workers)
+# Override per host in the inventory with `node_pool: cpu|gpu` if required.
+# ---------------------------------------------------------------------
+node_pool: "{{ 'gpu' if ansible_os_family == 'Debian' else 'cpu' }}"
+
+# ---------------------------------------------------------------------
+# GPU settings
+#   operator -> NVIDIA GPU Operator installs driver + container toolkit
+#   host     -> driver + toolkit installed on the node by role gpu_node,
+#               the operator then runs with driver/toolkit disabled
+# ---------------------------------------------------------------------
+gpu_driver_mode: operator
+node_taint_key: nvidia.com/gpu
+node_taint: "nvidia.com/gpu=true:NoSchedule"

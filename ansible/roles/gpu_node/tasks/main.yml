@@ -1,0 +1,86 @@
+---
+- name: Guard - this role only supports the Debian family (Ubuntu 22.04)
+  ansible.builtin.assert:
+    that: ansible_os_family == 'Debian'
+    fail_msg: "gpu_node supports Ubuntu/Debian only. {{ inventory_hostname }} is {{ ansible_os_family }}."
+    quiet: true
+
+- name: Validate the GPU driver mode
+  ansible.builtin.assert:
+    that: gpu_node_driver_mode in ['operator', 'host']
+    fail_msg: "gpu_driver_mode must be 'operator' or 'host', got '{{ gpu_node_driver_mode }}'"
+    quiet: true
+
+- name: Install PCI utilities for hardware detection
+  ansible.builtin.apt:
+    name: pciutils
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Detect NVIDIA devices on the PCI bus
+  ansible.builtin.command: lspci -nn
+  register: gpu_node_lspci
+  changed_when: false
+
+- name: Require NVIDIA hardware on a GPU node
+  ansible.builtin.assert:
+    that: "'NVIDIA' in gpu_node_lspci.stdout"
+    fail_msg: >-
+      No NVIDIA device found on {{ inventory_hostname }}. Remove the host from the
+      inventory, or set gpu_node_require_hardware: false for dry runs.
+    quiet: true
+  when: gpu_node_require_hardware | bool
+
+# The open-source nouveau driver conflicts with the NVIDIA driver (host driver
+# or the GPU Operator driver container), so it is blacklisted on every GPU node.
+- name: Blacklist the nouveau driver
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/blacklist-nouveau.conf
+    content: |
+      blacklist nouveau
+      options nouveau modeset=0
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update initramfs
+
+- name: Check whether nouveau is currently loaded
+  ansible.builtin.command: lsmod
+  register: gpu_node_lsmod
+  changed_when: false
+
+- name: Remember whether a reboot is needed
+  ansible.builtin.set_fact:
+    gpu_node_nouveau_loaded: "{{ gpu_node_lsmod.stdout is search('(^|\\n)nouveau\\s') }}"
+
+- name: Apply pending handlers now
+  ansible.builtin.meta: flush_handlers
+
+- name: Install the NVIDIA driver and container toolkit on the host
+  ansible.builtin.include_tasks: host_driver.yml
+  when: gpu_node_driver_mode == 'host'
+
+- name: Explain who manages the driver
+  ansible.builtin.debug:
+    msg: >-
+      Driver mode '{{ gpu_node_driver_mode }}':
+      {{ 'host packages were installed by this role.'
+         if gpu_node_driver_mode == 'host'
+         else 'the NVIDIA GPU Operator will install the driver and container toolkit (playbooks/gpu-operator.yml).' }}
+
+- name: Reboot to unload nouveau / load the NVIDIA driver
+  ansible.builtin.reboot:
+    reboot_timeout: 900
+  when:
+    - gpu_node_reboot_if_needed | bool
+    - gpu_node_nouveau_loaded | bool or (gpu_node_host_driver_changed | default(false) | bool)
+
+- name: Warn that a reboot is still pending
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} needs a reboot (nouveau loaded or new driver installed).
+      Reboot in a maintenance window, then re-run with --tags gpu,join.
+  when:
+    - not (gpu_node_reboot_if_needed | bool)
+    - gpu_node_nouveau_loaded | bool or (gpu_node_host_driver_changed | default(false) | bool)

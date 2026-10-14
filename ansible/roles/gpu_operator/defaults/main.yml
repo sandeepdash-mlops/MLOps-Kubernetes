@@ -1,0 +1,11 @@
+---
+gpu_operator_namespace: gpu-operator
+gpu_operator_release: gpu-operator
+gpu_operator_repo_url: https://helm.ngc.nvidia.com/nvidia
+# Pin a chart version for reproducible installs, e.g. "v25.3.0" (empty = latest).
+gpu_operator_chart_version: ""
+# With driver mode 'host' the operator must NOT install driver or toolkit.
+gpu_operator_driver_enabled: "{{ (gpu_driver_mode | default('operator')) == 'operator' }}"
+gpu_operator_toolkit_enabled: "{{ (gpu_driver_mode | default('operator')) == 'operator' }}"
+gpu_operator_default_runtime: crio
+gpu_operator_wait_timeout: 15m

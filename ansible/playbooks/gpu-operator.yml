@@ -1,0 +1,12 @@
+---
+# Installs the NVIDIA GPU Operator once, from the first control plane.
+# Run after the GPU workers have joined.
+- name: Deploy the NVIDIA GPU Operator
+  hosts: control_plane[0]
+  become: true
+  gather_facts: false
+
+  roles:
+    - role: gpu_operator
+      when: gpu_operator_enabled | default(true) | bool
+      tags: [gpu, operator]

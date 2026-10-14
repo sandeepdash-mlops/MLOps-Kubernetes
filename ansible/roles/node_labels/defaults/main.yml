@@ -1,0 +1,3 @@
+---
+node_labels_retries: 30
+node_labels_delay: 10

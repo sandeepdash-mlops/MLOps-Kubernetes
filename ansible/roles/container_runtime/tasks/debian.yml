@@ -1,0 +1,28 @@
+---
+- name: Create the apt keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download the CRI-O repository signing key
+  ansible.builtin.get_url:
+    url: "{{ container_runtime_repo_base }}/deb/Release.key"
+    dest: /etc/apt/keyrings/cri-o.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Add the CRI-O apt repository
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/cri-o.asc] {{ container_runtime_repo_base }}/deb/ /"
+    filename: cri-o
+    state: present
+
+- name: Install CRI-O
+  ansible.builtin.apt:
+    name: cri-o
+    state: present
+    update_cache: true

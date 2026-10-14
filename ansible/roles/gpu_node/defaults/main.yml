@@ -1,0 +1,8 @@
+---
+# operator -> the NVIDIA GPU Operator installs driver + container toolkit
+# host     -> this role installs them on the node (operator runs without them)
+gpu_node_driver_mode: "{{ gpu_driver_mode | default('operator') }}"
+gpu_node_host_driver_package: nvidia-driver-550-server
+gpu_node_require_hardware: true
+gpu_node_reboot_if_needed: false
+gpu_node_toolkit_repo_base: https://nvidia.github.io/libnvidia-container/stable/deb

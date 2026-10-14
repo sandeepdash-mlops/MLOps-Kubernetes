@@ -1,0 +1,14 @@
+---
+# Worker-only overrides.
+
+# Ubuntu: ufw rules are always added, but ufw is only ENABLED when true.
+# Enabling it can block pod-to-pod routed traffic if not tuned, so it is
+# opt-in. SSH is always allowed before enabling.
+firewall_enable_ufw: false
+
+# Reboot automatically when the nouveau driver is loaded or a host driver was
+# just installed. Keep false in production and reboot in a maintenance window.
+gpu_node_reboot_if_needed: false
+
+# Fail if an Ubuntu "gpu" node has no NVIDIA device on the PCI bus.
+gpu_node_require_hardware: true

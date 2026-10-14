@@ -1,0 +1,4 @@
+.ansible_fact_cache/
+collections/
+*.retry
+*.log

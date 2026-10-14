@@ -1,0 +1,44 @@
+---
+- name: Install kubelet, kubeadm and kubectl for this OS family
+  ansible.builtin.include_tasks: "{{ ansible_os_family | lower }}.yml"
+
+- name: Create the kubelet systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# A drop-in survives package upgrades; edits under /usr/lib/systemd do not.
+# The new limit applies the next time kubelet starts (join or reboot).
+- name: Raise the kubelet open-file limit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/kubelet.service.d/20-limits.conf
+    content: |
+      [Service]
+      LimitNOFILE={{ kubernetes_node_kubelet_nofile }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd units
+
+# kubelet crash-loops until "kubeadm join" runs. That is expected, so only enable it.
+- name: Enable kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+
+- name: Check the installed kubeadm version
+  ansible.builtin.command: kubeadm version -o short
+  register: kubernetes_node_kubeadm_version
+  changed_when: false
+
+- name: Assert the node matches the cluster minor version
+  ansible.builtin.assert:
+    that: kubernetes_node_kubeadm_version.stdout.startswith('v' ~ k8s_version)
+    fail_msg: "kubeadm {{ kubernetes_node_kubeadm_version.stdout }} does not match cluster version v{{ k8s_version }}.x"
+    quiet: true
+
+- name: Apply pending handlers now
+  ansible.builtin.meta: flush_handlers

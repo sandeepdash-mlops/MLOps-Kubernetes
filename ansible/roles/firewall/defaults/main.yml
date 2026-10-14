@@ -1,0 +1,13 @@
+---
+firewall_ssh_port: 22
+firewall_enable_ufw: false
+
+# Worker node ports: kubelet, NodePort range, Cilium health, Hubble
+firewall_tcp_ports:
+  - "10250"
+  - "30000-32767"
+  - "4240"
+  - "4244"
+# Cilium VXLAN
+firewall_udp_ports:
+  - "8472"

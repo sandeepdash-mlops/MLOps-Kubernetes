@@ -1,0 +1,22 @@
+---
+- name: Configure the Kubernetes yum repository
+  ansible.builtin.yum_repository:
+    name: kubernetes
+    description: Kubernetes
+    baseurl: "{{ kubernetes_node_repo_base }}/rpm/"
+    gpgcheck: true
+    gpgkey: "{{ kubernetes_node_repo_base }}/rpm/repodata/repomd.xml.key"
+    exclude:
+      - kubelet
+      - kubeadm
+      - kubectl
+      - cri-tools
+      - kubernetes-cni
+    enabled: true
+
+- name: Install Kubernetes packages
+  ansible.builtin.dnf:
+    name: "{{ kubernetes_node_packages }}"
+    state: present
+    disable_excludes: kubernetes
+    update_cache: true

@@ -1,0 +1,29 @@
+---
+- name: Set the node hostname
+  ansible.builtin.include_tasks: hostname.yml
+  when: common_manage_hostname | bool
+
+# NOTE: if cloud-init has manage_etc_hosts enabled, make the same change in
+# /etc/cloud/templates/hosts.<redhat|debian>.tmpl so it survives reboots.
+- name: Map the API DNS name to the Keepalived floating IP
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\S+\s+{{ cluster_api_dns | regex_escape }}(\s|$)'
+    line: "{{ cluster_api_vip }} {{ cluster_api_dns }}"
+    state: present
+
+- name: Make sure the node resolves its own hostname locally
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^127\.0\.0\.1\s+{{ inventory_hostname | regex_escape }}(\s|$)'
+    line: "127.0.0.1 {{ inventory_hostname }}"
+    state: present
+
+- name: Install base packages
+  ansible.builtin.include_tasks: "packages_{{ ansible_os_family | lower }}.yml"
+
+- name: Disable swap
+  ansible.builtin.include_tasks: swap.yml
+
+- name: Configure kernel modules and sysctl
+  ansible.builtin.include_tasks: kernel.yml
